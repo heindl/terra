@@ -1,0 +1,249 @@
+package terra
+
+import (
+	"fmt"
+
+	"github.com/dhconnelly/rtreego"
+	"github.com/paulsmith/gogeos/geos"
+)
+
+type Feature struct {
+	ID          string
+	Type        string
+	Properties  map[string]interface{}
+	Geometry    *geos.Geometry
+	Classifiers []*Classifier
+}
+
+type FeatureCollection []*Feature
+
+// FIXME: READ ABOUT WKB AND WKT
+
+func NewFeature() (feature *Feature) {
+
+	feature = &Feature{}
+
+	// Add Random ID string if non-existant.
+	feature.ID = generateKey()
+
+	return
+
+}
+
+func NewPoint(latitude float64, longitude float64) (feat *Feature, er error) {
+	// Return a new Feature that is a point.
+
+	feat = NewFeature()
+
+	point, er := geos.NewPoint(geos.NewCoord(latitude, longitude))
+	if er != nil {
+		log.Error(er.Error())
+		return
+	}
+	er = feat.SetGeometry("Point", point)
+
+	return
+}
+
+func NewPolygon(polygons [][][]float64) (feat *Feature, er error) {
+	// Return a new Feature that is a point.
+
+	feat = NewFeature()
+
+	var iPolygons []interface{}
+	for _, linestrings := range polygons {
+		var iLinestrings []interface{}
+		for _, coordinates := range linestrings {
+			var iCoordinates []interface{}
+			for i := range coordinates {
+				iCoordinates = append(iCoordinates, interface{}(coordinates[i]))
+			}
+			iLinestrings = append(iLinestrings, iCoordinates)
+		}
+		iPolygons = append(iPolygons, iLinestrings)
+	}
+
+	polygon, er := decodePolygon(iPolygons)
+	if er != nil {
+		log.Error(er.Error())
+		return
+	}
+	er = feat.SetGeometry("Polygon", polygon)
+
+	return
+}
+
+func (feat Feature) Bounds() (rect *rtreego.Rect) {
+
+	var er error
+	var typer geos.GeometryType
+	if typer, er = feat.Geometry.Type(); er != nil {
+		log.Error(er.Error())
+		return
+	}
+	if typer == geos.POINT {
+		var x, y float64
+		if x, er = feat.Geometry.X(); er != nil {
+			log.Error(er.Error())
+			return
+		}
+		if y, er = feat.Geometry.Y(); er != nil {
+			log.Error(er.Error())
+			return
+		}
+		if rect, er = rtreego.NewRect(rtreego.Point{x, y}, []float64{0.00001, 0.00001}); er != nil {
+			log.Error(er.Error())
+			return
+		}
+		return
+	}
+
+	envelope, er := feat.Geometry.Envelope()
+	if er != nil {
+		log.Error(er.Error())
+		return
+	}
+	if envelope, er = envelope.Shell(); er != nil {
+		log.Error(er.Error())
+		return
+	}
+	coords, er := envelope.Coords()
+	if er != nil {
+		log.Error(er.Error())
+		return
+	}
+	if len(coords) != 5 {
+		log.Error("Unexpected number of coordinates while calculating feature bounds.")
+		return
+	}
+
+	// FIXME: GEOJSON somehow reverses these coordinates.
+	height := coords[1].X - coords[0].X
+	width := coords[3].Y - coords[0].Y
+	if rect, er = rtreego.NewRect(rtreego.Point{coords[0].X, coords[0].Y}, []float64{height, width}); er != nil {
+		log.Error(er.Error())
+	}
+
+	return
+}
+
+func (feat *Feature) SetGeometry(typer string, geometry *geos.Geometry) (er error) {
+
+	if typer != "Polygon" && typer != "Point" && typer != "MultiPolygon" {
+		er = fmt.Errorf("Presently, geostore only accepts GeoJSON types Point, LineString, Polygon and Multipolygon.")
+		log.Warning(er.Error())
+		return
+	}
+
+	feat.Type = typer
+
+	if geometry == nil {
+		return
+	}
+
+	feat.Geometry = geometry
+
+	return
+
+}
+
+func (feat *Feature) Property(name string) (property interface{}) {
+
+	//FIXME: Properly handle subarrays or subobjects.
+
+	property, ok := feat.Properties[name]
+	if !ok {
+		return
+	}
+
+	return
+
+	/*
+		if floatValue, ok := feat.Properties[name].(float64); ok {
+			property = strconv.FormatFloat(floatValue, 'f', 6, 64)
+			return
+		}
+
+		if boolValue, ok := feat.Properties[name].(bool); ok {
+			// Fixme: More Tersley Convert Boolean to string
+			property = strconv.FormatBool(boolValue)
+			return
+		}
+
+		if property, ok = feat.Properties[name].(string); ok {
+			// Fixme: More Tersley Convert Boolean to string
+			return
+		}
+	*/
+
+	return
+}
+
+func (feat *Feature) SetProperty(name string, property interface{}) {
+	if feat.Properties == nil {
+		feat.Properties = make(map[string]interface{})
+	}
+	feat.Properties[name] = property
+}
+
+func (feat *Feature) Contains(subfeat *Feature) (contains bool, er error) {
+
+	if contains, er = feat.Geometry.Contains(subfeat.Geometry); er != nil {
+		log.Error(er.Error())
+	}
+	return
+}
+
+func (feat *Feature) Within(subfeat *Feature) (within bool, er error) {
+
+	if within, er = feat.Geometry.Within(subfeat.Geometry); er != nil {
+		log.Error(er.Error())
+	}
+	return
+}
+
+func (feat *Feature) PointCoords() (x float64, y float64, er error) {
+
+	if feat.Type != "Point" {
+		er = fmt.Errorf("The feature geometry must be a point to return an x,y coordinate")
+	}
+
+	if x, er = feat.Geometry.X(); er != nil {
+		log.Error(er.Error())
+		return
+	}
+
+	if y, er = feat.Geometry.Y(); er != nil {
+		log.Error(er.Error())
+		return
+	}
+
+	return
+}
+
+func (feat *Feature) IsEmpty() bool {
+
+	if feat == nil {
+		return true
+	}
+
+	if feat.Geometry == nil {
+		return true
+	}
+
+	empty, er := feat.Geometry.IsEmpty()
+	if er != nil {
+		log.Error(er.Error())
+		return true
+	}
+
+	if empty {
+		return true
+	}
+
+	if feat.ID == "" {
+		return true
+	}
+
+	return false
+}
