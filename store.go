@@ -54,6 +54,10 @@ func (g *Geostore) Close() {
 	cache.Close()
 }
 
+func (g *Geostore) IsClosed() bool {
+	return (g == nil || g == &Geostore{})
+}
+
 // Add includes a new Geometry element into the geostore.
 // TODO: Open a new cache based on the country, for faster parsing.
 func (g *Geostore) Add(features ...*Feature) (keys []string, er error) {
