@@ -97,7 +97,7 @@ func (g *Geostore) GetClassifiers(feat *Feature, filters []*Classifier) (er erro
 		return
 	}
 
-	// log.Info("Getting %d classifiers for point %v (%f,%f) on date %v.", len(filters), feat.Property("recordTitle"), x, y, feat.Property("recordDate"))
+	// fmt.Printf("Getting %d classifiers for point %v (%f,%f) on date %v.", len(filters), feat.Property("recordTitle"), x, y, feat.Property("recordDate"))
 
 	list, er := g.Contains(feat)
 	if er != nil {
