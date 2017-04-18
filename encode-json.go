@@ -2,69 +2,63 @@ package terra
 
 import (
 	"encoding/json"
-	"fmt"
-
 	"github.com/paulsmith/gogeos/geos"
+	"github.com/saleswise/errors/errors"
 )
 
 type geoJSONEncodeType struct {
 	ID          string                 `json:"id"`
 	Type        string                 `json:"type"`
 	Properties  map[string]interface{} `json:"properties"`
-	Classifiers []*Classifier          `json:"classifiers"`
 	Geometry    struct {
 		Type        string        `json:"type"`
 		Coordinates []interface{} `json:"coordinates"`
 	} `json:"geometry"`
 }
 
-func (feat *Feature) ToJSON() (geojson []byte, er error) {
+func (feat *Feature) ToJSON() ([]byte, error) {
 
-	if feat.IsEmpty() {
-		er = fmt.Errorf("The feature is empty, with nothing to encode into GeoJSON.")
-		log.Warning(er.Error())
-		return
+	empty, err := feat.IsEmpty()
+	if err != nil {
+		return nil, err
+	}
+	if empty {
+		return nil, errors.New("The feature is empty, with nothing to encode into GeoJSON.")
 	}
 
 	var construct = &geoJSONEncodeType{
 		ID:          feat.ID,
 		Type:        "Feature",
 		Properties:  feat.Properties,
-		Classifiers: feat.Classifiers,
 	}
 	construct.Geometry.Type = feat.Type
 
 	switch {
 	case feat.Type == "Point":
-		var coords []geos.Coord
-		if coords, er = feat.Geometry.Coords(); er != nil {
-			log.Error(er.Error())
-			return
+		coords, err := feat.Geometry.Coords()
+		if err != nil {
+			return nil, errors.Wrap(err, "could not get geometry coords")
 		}
 		construct.Geometry.Coordinates = encodeCoord(coords[0])
 	case feat.Type == "LineString":
-		if construct.Geometry.Coordinates, er = encodeLineString(feat.Geometry); er != nil {
-			return
-		}
+		construct.Geometry.Coordinates, err = encodeLineString(feat.Geometry)
 	case feat.Type == "Polygon":
-		if construct.Geometry.Coordinates, er = encodePolygon(feat.Geometry); er != nil {
-			return
-		}
+		construct.Geometry.Coordinates, err = encodePolygon(feat.Geometry)
 	case feat.Type == "MultiPolygon":
-		if construct.Geometry.Coordinates, er = encodeMultiPolygon(feat.Geometry); er != nil {
-			return
-		}
+		construct.Geometry.Coordinates, err = encodeMultiPolygon(feat.Geometry)
 	default:
-		er = fmt.Errorf("Currently GeoJSON must be type Point, Linestring, Polygon, or Multipolygon. Found %s.", feat.Type)
-		log.Error(er.Error())
-		return
+		return nil, errors.Newf("Currently GeoJSON must be type Point, Linestring, Polygon, or Multipolygon. Found %s.", feat.Type)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	if geojson, er = json.Marshal(construct); er != nil {
-		log.Error(er.Error())
+	geojson, err := json.Marshal(construct)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not marshal geojson")
 	}
 
-	return
+	return geojson, nil
 
 }
 
@@ -72,70 +66,66 @@ func encodeCoord(coord geos.Coord) []interface{} {
 	return []interface{}{coord.X, coord.Y}
 }
 
-func encodeLineString(geometry *geos.Geometry) (response []interface{}, er error) {
+func encodeLineString(geometry *geos.Geometry) ([]interface{}, error) {
 
-	var coords []geos.Coord
-	if coords, er = geometry.Coords(); er != nil {
-		log.Error(er.Error())
-		return
+	coords, err := geometry.Coords()
+	if err != nil {
+		return nil, err
 	}
 
+	var res []interface{}
 	for i := range coords {
-		response = append(response, encodeCoord(coords[i]))
+		res = append(res, encodeCoord(coords[i]))
 	}
 
-	return
+	return res, nil
 }
 
-func encodePolygon(geometry *geos.Geometry) (response []interface{}, er error) {
+func encodePolygon(geometry *geos.Geometry) ([]interface{}, error) {
 
 	var geometries []*geos.Geometry
-
-	shell, er := geometry.Shell()
-	if er != nil {
-		log.Error(er.Error())
-		return
+	shell, err := geometry.Shell()
+	if err != nil {
+		return nil, errors.Wrap(err, "could not get shell")
 	}
 	geometries = append(geometries, shell)
 
-	holes, er := geometry.Holes()
-	if er != nil {
-		log.Error(er.Error())
-		return
+	holes, err := geometry.Holes()
+	if err != nil {
+		return nil, errors.Wrap(err, "could not get geometry holes")
 	}
 	geometries = append(geometries, holes...)
 
+	res := []interface{}{}
 	for i := range geometries {
-		var coordProgression []interface{}
-		if coordProgression, er = encodeLineString(geometries[i]); er != nil {
-			return
+		coordProgression, err := encodeLineString(geometries[i])
+		if err != nil {
+			return nil, err
 		}
-		response = append(response, coordProgression)
+		res = append(res, coordProgression)
 	}
 
-	return
+	return res, nil
 }
 
-func encodeMultiPolygon(multipolygon *geos.Geometry) (response []interface{}, er error) {
+func encodeMultiPolygon(multipolygon *geos.Geometry) ([]interface{}, error) {
 
-	var collectionLength int
-	if collectionLength, er = multipolygon.NGeometry(); er != nil {
-		log.Error(er.Error())
-		return
+	collectionLength, err := multipolygon.NGeometry()
+	if err != nil {
+		return nil, errors.Wrap(err, "could not create new geometry")
 	}
-
+	res := []interface{}{}
 	for i := 0; i < collectionLength; i++ {
-		var g *geos.Geometry
-		var compiled []interface{}
-		if g, er = multipolygon.Geometry(i); er != nil {
-			log.Error(er.Error())
-			return
+		g, err := multipolygon.Geometry(i)
+		if err != nil {
+			return nil, errors.Wrap(err, "could not get polygon geometry")
 		}
-		if compiled, er = encodePolygon(g); er != nil {
-			return
+		compiled, err := encodePolygon(g)
+		if err != nil {
+			return nil, err
 		}
-		response = append(response, compiled)
+		res = append(res, compiled)
 	}
 
-	return
+	return res, nil
 }

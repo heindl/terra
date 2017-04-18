@@ -3,53 +3,50 @@ package terra
 import (
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
-
 	"github.com/paulsmith/gogeos/geos"
+	"github.com/saleswise/errors/errors"
+	"bitbucket.org/heindl/logkeys"
+	. "bitbucket.org/heindl/malias"
+	"strconv"
 )
 
-func NewFeatureFromJSON(request []byte) (feature *Feature, er error) {
-
+func NewFeatureFromJSON(request []byte) (*Feature, error) {
 	var g map[string]interface{}
-	if er = json.Unmarshal(request, &g); er != nil {
-		log.Error(er.Error())
-		return
+	if err := json.Unmarshal(request, &g); err != nil {
+		return nil, errors.Wrap(err, "could not unmarshal json for feature")
 	}
-	feature, er = decodeFeature(g)
-	return
-
+	return decodeFeature(g)
 }
 
-func NewFeatureCollectionFromJSON(request []byte) (features FeatureCollection, er error) {
+func NewFeatureCollectionFromJSON(request []byte) (FeatureCollection, error) {
 
 	type geoJSONFeatureType struct {
 		Features []map[string]interface{} `json:"features"`
 	}
 
 	var geo geoJSONFeatureType
-	if er = json.Unmarshal(request, &geo); er != nil {
-		log.Error(er.Error())
-		return
+	if err := json.Unmarshal(request, &geo); err != nil {
+		return nil, errors.Wrap(err, "could not unmarhsal geojson feature type")
 	}
 
+	var coll FeatureCollection
 	for i := range geo.Features {
-		var feat *Feature
-		if feat, er = decodeFeature(geo.Features[i]); er != nil {
-			return
+		feat, err := decodeFeature(geo.Features[i])
+		if err != nil {
+			return nil, err
 		}
-		features = append(features, feat)
+		coll = append(coll, feat)
 	}
 
-	return
+	return coll, nil
 }
 
-func decodeFeature(geo map[string]interface{}) (feature *Feature, er error) {
-
-	feature = &Feature{}
-	var ok bool
-
+func decodeFeature(geo map[string]interface{}) (*Feature, error) {
 	// ADD RANDOM ID STRING IF NONEXISTANT
-	if _, ok = geo["id"]; !ok || feature.ID == "" {
+
+	feature := Feature{}
+
+	if _, ok := geo["id"]; !ok || feature.ID == "" {
 		feature.ID = generateKey()
 	} else {
 		feature.ID = geo["id"].(string)
@@ -60,132 +57,92 @@ func decodeFeature(geo map[string]interface{}) (feature *Feature, er error) {
 		feature.Properties = geo["properties"].(map[string]interface{})
 	}
 
-	// DECODE CLASSIFIERS
-	if _, ok = geo["classifiers"]; ok {
-		if classifiers, ok := geo["classifiers"].([]interface{}); ok {
-			for i := range classifiers {
-				if class, ok := classifiers[i].(map[string]interface{}); ok {
-
-					c := &Classifier{}
-
-					if _, ok = class["key"]; ok {
-						c.Key = class["key"].(string)
-					}
-
-					if _, ok = class["value"]; ok {
-						c.Value = class["value"].(float64)
-					}
-
-					if _, ok = class["startdate"]; ok {
-						c.StartDate = class["startdate"].(string)
-					}
-
-					if _, ok = class["enddate"]; ok {
-						c.EndDate = class["enddate"].(string)
-					}
-
-					if _, ok = class["type"]; ok {
-						c.Type = class["type"].(string)
-					}
-
-					feature.Classifiers = append(feature.Classifiers, c)
-
-				}
-			}
-		}
+	g, ok := geo["geometry"]
+	if !ok {
+		return nil, errors.New("Missing a geoJSON geometry property.")
 	}
 
-	if _, ok = geo["geometry"]; !ok {
-		er = fmt.Errorf("Missing a geoJSON geometry property.")
-		log.Error(er.Error())
-		return
+	geometry, ok := g.(map[string]interface{})
+	if !ok {
+		return nil, errors.Newf("Geometry property is malformed: %s.", geo["geometry"])
 	}
 
-	var geometry map[string]interface{}
-	if geometry, ok = geo["geometry"].(map[string]interface{}); !ok {
-		er = fmt.Errorf("Geometry property is malformed: %s.", geo["geometry"])
-		log.Error(er.Error())
-		return
+	geometryType, ok := geometry["type"]
+	if !ok {
+		return nil, errors.New("A Geometry Type property is required for decoding geoJSON.")
 	}
 
-	if _, ok = geometry["type"]; !ok {
-		er = fmt.Errorf("A Geometry Type property is required for decoding geoJSON.")
-		log.Error(er.Error())
-		return
+	feature.Type, ok = geometryType.(string)
+	if !ok {
+		return nil, errors.New("The geoJSON Geometry Type property is expected to be a string.")
 	}
 
-	if feature.Type, ok = geometry["type"].(string); !ok {
-		er = fmt.Errorf("The geoJSON Geometry Type property is expected to be a string.")
-		log.Error(er.Error())
-		return
+	coords, ok := geometry["coordinates"]
+	if !ok {
+		return nil, errors.New("GeoJSON Geometry Coordinates property is required.")
 	}
 
-	if _, ok = geometry["coordinates"]; !ok {
-		er = fmt.Errorf("GeoJSON Geometry Coordinates property is required.")
-		log.Error(er.Error())
-		return
+	coordinates, ok := coords.([]interface{})
+	if !ok {
+		return nil, errors.Newf("Geometry Coordinates property values are are malformed: %s.", geometry["coordinates"])
 	}
 
-	var coordinates []interface{}
-	if coordinates, ok = geometry["coordinates"].([]interface{}); !ok {
-		er = fmt.Errorf("Geometry Coordinates property values are are malformed: %s.", geometry["coordinates"])
-		log.Error(er.Error())
-		return
-	}
-
+	var err error
 	switch {
 	case feature.Type == "Point":
-		if feature.Geometry, er = decodePoint(coordinates); er != nil {
-			return
-		}
+		feature.Geometry, err = decodePoint(coordinates)
 	case feature.Type == "LineString":
-		if feature.Geometry, er = decodeLineString(coordinates); er != nil {
-			return
-		}
+		feature.Geometry, err = decodeLineString(coordinates)
 	case feature.Type == "Polygon":
-		if feature.Geometry, er = decodePolygon(coordinates); er != nil {
-			return
-		}
+		feature.Geometry, err = decodePolygon(coordinates)
 	case feature.Type == "MultiPolygon":
-		if feature.Geometry, er = decodeMultiPolygon(coordinates); er != nil {
-			return
-		}
+		feature.Geometry, err = decodeMultiPolygon(coordinates)
 	default:
-		er = fmt.Errorf("Currently, GeoJSON must be type Point, Linestring, Polygon, or Multipolygon. Found %s.", feature.Type)
-		log.Error(er.Error())
-		return
+		return nil, errors.Newf("Unsupported type: %s.Currently, GeoJSON must be type Point, Linestring, Polygon, or Multipolygon.", feature.Type)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	return
+	return &feature, nil
 
 }
 
-func decodePoint(coordinates []interface{}) (response *geos.Geometry, er error) {
+func decodePoint(coordinates []interface{}) (*geos.Geometry, error) {
 
-	var latitude, longitude float64
-	var ok bool
+	var (
+		latitude, longitude float64
+		err error
+	)
 
-	if latitude, ok = coordinates[0].(float64); !ok {
-		er = fmt.Errorf("First element of Point array should be a float64 %s.", coordinates[0])
-		log.Error(er.Error())
-		return
+	if lng, ok := coordinates[0].(string); !ok || lng == "" {
+		return nil, errors.New("first element of Point array should be a float64 longitude").SetState(M{logkeys.StringValue: coordinates[0]})
+	} else {
+		longitude, err = strconv.ParseFloat(lng, 64)
+		if err != nil {
+			return nil, errors.Wrap(err, "could not parse longitude").SetState(M{logkeys.StringValue: lng})
+		}
 	}
 
-	if longitude, ok = coordinates[1].(float64); !ok {
-		er = fmt.Errorf("Second element of Point array should be a float64 %s.", coordinates[0])
-		log.Error(er.Error())
-		return
+	if lat, ok := coordinates[1].(string); !ok || lat == "" {
+		return nil, errors.New("second element of Point array should be a float64 latitude").SetState(M{logkeys.StringValue: coordinates[1]})
+	} else {
+		latitude, err = strconv.ParseFloat(lat, 64)
+		if err != nil {
+			return nil, errors.Wrap(err, "could not parse latitude").SetState(M{logkeys.StringValue: lat})
+		}
 	}
 
-	if response, er = geos.NewPoint(geos.NewCoord(latitude, longitude)); er != nil {
-		log.Error(er.Error())
+	response, err := geos.NewPoint(geos.NewCoord(longitude, latitude))
+	if err != nil {
+		return nil, errors.Wrap(err, "could not create new coordinates")
 	}
 
-	return
+	return response, nil
 
 }
 
-func decodeLineString(coordinates []interface{}) (response *geos.Geometry, er error) {
+func decodeLineString(coordinates []interface{}) (*geos.Geometry, error) {
 
 	var coords []geos.Coord
 
@@ -199,112 +156,96 @@ func decodeLineString(coordinates []interface{}) (response *geos.Geometry, er er
 		)
 
 		if points, ok = coordinate.([]interface{}); !ok {
-			er = fmt.Errorf("Expect each element in a LineString property array to be a coordinate array.")
-			log.Error(er.Error())
-			return
+			return nil, errors.New("Expect each element in a LineString property array to be a coordinate array.")
 		}
 
-		if latitude, ok = points[0].(float64); !ok {
-			er = fmt.Errorf("First element of Point array should be a float64 %s.", points[0])
-			log.Error(er.Error())
-			return
+		if latitude, ok = points[1].(float64); !ok {
+			return nil, errors.Newf("First element of Point array should be a float64 %s.", points[0])
 		}
 
-		if longitude, ok = points[1].(float64); !ok {
-			er = fmt.Errorf("Second element of Point array should be a float64 %s.", points[1])
-			log.Error(er.Error())
-			return
+		if longitude, ok = points[0].(float64); !ok {
+			return nil, errors.Newf("Second element of Point array should be a float64 %s.", points[1])
 		}
 
 		coords = append(coords, geos.NewCoord(latitude, longitude))
 	}
 
-	if response, er = geos.NewLineString(coords...); er != nil {
-		log.Error(er.Error())
+	response, err := geos.NewLineString(coords...)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not create line string")
 	}
 
-	return
+	return response, nil
 
 }
 
-func decodePolygon(coordinates []interface{}) (response *geos.Geometry, er error) {
+func decodePolygon(coordinates []interface{}) (*geos.Geometry, error) {
 
 	var contours [][]geos.Coord
-	var ok bool
 
 	for _, coordinate := range coordinates {
 
-		var coords []geos.Coord
-		var linestrings []interface{}
-
-		if linestrings, ok = coordinate.([]interface{}); !ok {
-			er = fmt.Errorf("Expect each sub-element in a Polygon property array to be a LineString array.")
-			log.Error(er.Error())
-			return
+		linestrings, ok := coordinate.([]interface{})
+		if !ok {
+			return nil, errors.New("Expect each sub-element in a Polygon property array to be a LineString array.")
 		}
+
+		coords := []geos.Coord{}
 
 		for _, linestring := range linestrings {
 
-			var latitude, longitude float64
-			var points []interface{}
-
-			if points, ok = linestring.([]interface{}); !ok {
-				er = fmt.Errorf("Expect each sub-element in a Polygon Linestring sub-array to be a coordinates array.")
-				log.Error(er.Error())
-				return
+			points, ok := linestring.([]interface{})
+			if !ok {
+				return nil, errors.New("Expect each sub-element in a Polygon Linestring sub-array to be a coordinates array.")
 			}
 
-			if latitude, ok = points[0].(float64); !ok {
-				er = fmt.Errorf("First element of Point array should be a float64 %s.", points[0])
-				log.Error(er.Error())
-				return
+			latitude, ok := points[1].(float64)
+			if !ok {
+				return nil, errors.Newf("First element of Point array should be a float64 %s.", points[0])
 			}
 
-			if longitude, ok = points[1].(float64); !ok {
-				er = fmt.Errorf("Second element of Point array should be a float64 %s.", points[1])
-				log.Error(er.Error())
-				return
+			longitude, ok := points[0].(float64)
+			if !ok {
+				return nil, errors.Newf("Second element of Point array should be a float64 %s.", points[1])
 			}
-
-			coords = append(coords, geos.NewCoord(latitude, longitude))
+			coords = append(coords, geos.NewCoord(longitude, latitude))
 		}
 
 		contours = append(contours, coords)
 
 	}
 
-	if response, er = geos.NewPolygon(contours[0], contours[1:]...); er != nil {
-		log.Error(er.Error())
+	response, err := geos.NewPolygon(contours[0], contours[1:]...)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not create new polygon")
 	}
 
-	return
+	return response, nil
 
 }
 
-func decodeMultiPolygon(coordinates []interface{}) (response *geos.Geometry, er error) {
+func decodeMultiPolygon(coordinates []interface{}) (*geos.Geometry, error) {
 
-	var geometries []*geos.Geometry
-	var ok bool
+	geometries := []*geos.Geometry{}
 
 	for _, coordinate := range coordinates {
-		var polygon []interface{}
-		if polygon, ok = coordinate.([]interface{}); !ok {
-			er = fmt.Errorf("Error decoding MultiPolygon.")
-			log.Error(er.Error())
-			return
+		polygon, ok := coordinate.([]interface{})
+		if !ok {
+			return nil, errors.New("coordinate polygon not an interface array")
 		}
-		var g *geos.Geometry
-		if g, er = decodePolygon(polygon); er != nil {
-			return
+		g, err := decodePolygon(polygon)
+		if err != nil {
+			return nil, errors.Wrap(err, "could not decode polygon")
 		}
 		geometries = append(geometries, g)
 	}
 
-	if response, er = geos.NewCollection(geos.MULTIPOLYGON, geometries...); er != nil {
-		log.Error(er.Error())
+	response, err := geos.NewCollection(geos.MULTIPOLYGON, geometries...)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not create new collection")
 	}
 
-	return
+	return response, nil
 }
 
 func generateKey() string {

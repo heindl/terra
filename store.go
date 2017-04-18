@@ -6,20 +6,22 @@ import (
 
 	"github.com/dhconnelly/rtreego"
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/saleswise/errors/errors"
 )
 
-var cache *leveldb.DB
-var tree *rtreego.Rtree
+
 
 // Geostore represents ...
 type Geostore struct {
 	directory string
+	cache *leveldb.DB
+	tree *rtreego.Rtree
 }
 
 // OpenGeostore creates ...
-func Open(directory string) (store *Geostore, er error) {
+func Open(directory string) (*Geostore, error) {
 
-	store = &Geostore{}
+	store := Geostore{}
 
 	if directory != "" {
 		store.directory = path.Join(directory, "features")
@@ -27,31 +29,34 @@ func Open(directory string) (store *Geostore, er error) {
 		store.directory = path.Join(".", "terrastore", "features")
 	}
 
-	if cache, er = leveldb.OpenFile(store.directory, nil); er != nil {
-		log.Error("Unable to open the directory: %s. %s", store.directory, er)
+	var err error
+	store.cache, err = leveldb.OpenFile(store.directory, nil)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Unable to open the directory: %s.", store.directory)
 	}
 
-	tree = rtreego.NewTree(2, 25, 50)
+	store.tree = rtreego.NewTree(2, 25, 50)
 
-	iter := cache.NewIterator(nil, nil)
-	var feature *Feature
+	iter := store.cache.NewIterator(nil, nil)
+	defer iter.Release()
 	for iter.Next() {
-		if feature, er = NewFeatureFromJSON(iter.Value()); er != nil {
-			log.Error("While creating a new feature from initial store data: %s.", er.Error())
-			return
+		feature, err := NewFeatureFromJSON(iter.Value())
+		if err != nil {
+			return nil, err
 		}
-		tree.Insert(feature)
+		store.tree.Insert(feature)
 	}
-	iter.Release()
 	if iter.Error() != nil {
-		er = fmt.Errorf("From the initial store data iterator: %s.", iter.Error())
-		log.Error(er.Error())
+		return nil, errors.Wrapf(err, "error iterating through store")
 	}
-	return
+	return &store, nil
 }
 
-func (g *Geostore) Close() {
-	cache.Close()
+func (g *Geostore) Close() error {
+	//if err := g.cache.Close(); err != nil && err != leveldb.ErrClosed {
+	//	return errors.Wrap(err, "could not close geostore")
+	//}
+	return g.cache.Close()
 }
 
 func (g *Geostore) IsClosed() bool {
@@ -60,111 +65,110 @@ func (g *Geostore) IsClosed() bool {
 
 // Add includes a new Geometry element into the geostore.
 // TODO: Open a new cache based on the country, for faster parsing.
-func (g *Geostore) Add(features ...*Feature) (keys []string, er error) {
+func (g *Geostore) Add(features ...*Feature) ([]string, error) {
 
+	keys := []string{}
 	for i := range features {
 
-		if features[i].IsEmpty() {
+		empty, err := features[i].IsEmpty()
+		if err != nil {
+			return nil, err
+		}
+		if empty {
 			continue
 		}
 
-		var value []byte
-		if value, er = features[i].ToJSON(); er != nil {
-			return
+		value, err := features[i].ToJSON()
+		if err != nil {
+			return nil, err
 		}
 
-		if er = cache.Put([]byte(features[i].ID), value, nil); er != nil {
-			log.Error(er.Error())
-			return
+		if err := g.cache.Put([]byte(features[i].ID), value, nil); err != nil {
+			return nil, errors.Wrap(err, "could not put feature in cache")
 		}
 
-		tree.Insert(features[i])
+		g.tree.Insert(features[i])
 
 		keys = append(keys, features[i].ID)
 
 	}
 
-	return
+	return keys, nil
 }
 
 // Update ...
-func (g *Geostore) Update(key []byte, feature *Feature) (er error) {
+func (g *Geostore) Update(key []byte, feature *Feature) error {
 
-	var value []byte
-	if value, er = feature.ToJSON(); er != nil {
-		return
+	value, err := feature.ToJSON()
+	if err != nil {
+		return err
 	}
 
 	feat, _ := g.Get(key)
-	if !feat.IsEmpty() {
-		deleted := tree.Delete(feat)
-		if !deleted {
-			er = fmt.Errorf("Feature %s not found in rtree, and cannot be deleted.")
-			log.Error(er.Error())
-			return
-		}
+	empty, err := feat.IsEmpty()
+	if err != nil {
+		return err
+	}
+	if !empty && !g.tree.Delete(feat) {
+		return errors.Newf("Feature %s not found in rtree, and cannot be deleted.", feat)
 	}
 
-	if er = cache.Put(key, value, nil); er != nil {
-		log.Error(er.Error())
-		return
+	if err := g.cache.Put(key, value, nil); err != nil {
+		return errors.Wrap(err, "could not add feature to cache")
 	}
-	tree.Insert(feature)
+	g.tree.Insert(feature)
 
-	return
+	return nil
 }
 
 // Remove ...
-func (g *Geostore) Remove(key []byte) (er error) {
+func (g *Geostore) Remove(key []byte) error {
 
 	feat, _ := g.Get(key)
-	if !feat.IsEmpty() {
-		deleted := tree.Delete(feat)
-		if !deleted {
-			er = fmt.Errorf("Feature %s not found in rtree, and cannot be deleted.")
-			log.Error(er.Error())
-			return
-		}
+	empty, err := feat.IsEmpty()
+	if err != nil {
+		return err
+	}
+	if !empty && !g.tree.Delete(feat) {
+		return errors.Newf("Feature %s not found in rtree, and cannot be deleted.", feat)
 	}
 
-	if er = cache.Delete(key, nil); er != nil {
-		log.Error(er.Error())
+	if err := g.cache.Delete(key, nil); err != nil {
+		return errors.Wrap(err, "could not delete key")
 	}
 
-	return
+	return nil
 
 }
 
 // Get ...
-func (g *Geostore) Get(key []byte) (feature *Feature, er error) {
-	var response []byte
-	if response, er = cache.Get(key, nil); er != nil {
-		log.Error(er.Error())
-		return
+func (g *Geostore) Get(key []byte) (*Feature, error) {
+	response, err := g.cache.Get(key, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not get data in cache")
 	}
-	feature, er = NewFeatureFromJSON(response)
-	return
+	return NewFeatureFromJSON(response)
 }
 
-func (g *Geostore) Contains(feat *Feature) (list []*Feature, er error) {
-	response := tree.SearchIntersect(feat.Bounds())
+func (g *Geostore) Contains(feat *Feature) ([]*Feature, error) {
+	response := g.tree.SearchIntersect(feat.Bounds())
+	list := []*Feature{}
 	for i := range response {
-		var ok bool
-		var f *Feature
 		// if f, ok = response[i].(Feature); !ok {
 		// 	log.Warning("Response from rtree could not be typed as a feature.")
 		// 	continue
 		// }
-		f, _ = response[i].(*Feature)
-		if ok, er = f.Contains(feat); er != nil {
-			return
+		f := response[i].(*Feature)
+		ok, err := f.Contains(feat)
+		if err != nil {
+			return nil, err
 		}
 		if !ok {
 			continue
 		}
 		list = append(list, f)
 	}
-	return
+	return list, nil
 }
 
 // Contains ...
@@ -210,7 +214,7 @@ func (g *Geostore) Contains(feat *Feature) (list []*Feature, er error) {
 
 func (g *Geostore) Clear() (er error) {
 	batch := new(leveldb.Batch)
-	iter := cache.NewIterator(nil, nil)
+	iter := g.cache.NewIterator(nil, nil)
 	for iter.Next() {
 		batch.Delete(iter.Key())
 	}
@@ -219,23 +223,25 @@ func (g *Geostore) Clear() (er error) {
 		er = iter.Error()
 		return
 	}
-	er = cache.Write(batch, nil)
-	tree = rtreego.NewTree(2, 25, 50)
+	er = g.cache.Write(batch, nil)
+	g.tree = rtreego.NewTree(2, 25, 50)
 	return
 }
 
-func (g *Geostore) Length() (count int, er error) {
-	iter := cache.NewIterator(nil, nil)
+func (g *Geostore) Length() (int, error) {
+	var count int
+	iter := g.cache.NewIterator(nil, nil)
 	for iter.Next() {
 		count = count + 1
 	}
 	iter.Release()
 	if iter.Error() != nil {
-		er = iter.Error()
+		return 0, iter.Error()
 	}
-	treeSize := tree.Size()
+	treeSize := g.tree.Size()
 	if treeSize != count {
-		er = fmt.Errorf("Expected both the store and the rtree to have length %d.", count)
+		return 0, fmt.Errorf("Expected both the store and the rtree to have length %d.", count)
 	}
-	return
+	return count, nil
+
 }
