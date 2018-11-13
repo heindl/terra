@@ -31,7 +31,7 @@ func TestStore(t *testing.T) {
 
 	Convey("given an environment", t, func() {
 
-		store, err := Open("./geostore")
+		store, err := OpenGeostore("./geostore")
 		So(err, ShouldBeNil)
 
 		Convey("should save and renew from store", func() {

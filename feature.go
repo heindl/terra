@@ -23,7 +23,7 @@ func NewFeature() (feature *Feature) {
 
 	feature = &Feature{}
 
-	// Add Random ID string if non-existant.
+	// AddUsage Random ID string if non-existant.
 	feature.ID = generateKey()
 
 	return

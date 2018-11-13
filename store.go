@@ -19,7 +19,7 @@ type Geostore struct {
 }
 
 // OpenGeostore creates ...
-func Open(directory string) (*Geostore, error) {
+func OpenGeostore(directory string) (*Geostore, error) {
 
 	store := Geostore{}
 
@@ -63,7 +63,7 @@ func (g *Geostore) IsClosed() bool {
 	return (g == nil || g == &Geostore{})
 }
 
-// Add includes a new Geometry element into the geostore.
+// AddUsage includes a new Geometry element into the geostore.
 // TODO: Open a new cache based on the country, for faster parsing.
 func (g *Geostore) Add(features ...*Feature) ([]string, error) {
 
